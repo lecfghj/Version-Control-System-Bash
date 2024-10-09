@@ -1,0 +1,258 @@
+vcsSourceCode.txt
+#!/bin/bash
+
+scriptPath="$(dirname "$(readlink -f "$0")")"
+
+loggedIn=1
+
+initRootDir(){
+if [ ! -d "$scriptPath/ECO" ];
+then mkdir ECO
+fi
+
+if [ ! -d "$scriptPath/ECO/.metadata/.userData" ];
+then mkdir -p "$scriptPath/ECO/.metadata/.userData"
+fi
+}
+
+initRootDir
+
+logData(){
+user=$(whoami)
+dateFormatted=$(date "+%Y/%m/%d %H:%M:%S")
+
+case $# in
+0)
+	read -p "Enter additional information about commit: " message
+	;;
+1)
+	message="$1"
+	;;
+esac
+
+echo "User $user made a commit on $dateFormatted"
+echo "Additional information about commit: $message"
+}
+
+
+initProjectDir(){
+
+read -p "Enter name for your project: " projectName
+if [ ! -d "$scriptPath/ECO/$projectName" ];
+then
+	mkdir -p "$scriptPath/ECO/$projectName/.eco.$projectName"
+	mkdir "$scriptPath/ECO/$projectName/.metadata"
+	touch "$scriptPath/ECO/$projectName/.metadata/$projectName.log"
+	logData "Repository has been created." >> "$scriptPath/ECO/$projectName/.metadata/$projectName.log"
+else
+	echo "Such project already exists!"
+fi
+}
+
+
+#Search for .metadata folder in the current directory and its parent directories
+#its probably not wirking now, just ignore it
+navigateToProjectDirectory(){
+projectDirectoryPath=""
+currentDirectory="$(pwd)"
+#search for.matadata in current directory and store its path as a variable
+#if not found, then search in parent directories and navigate there when found
+while [ "$currentDirectory" != "/" ];
+do
+	if [ -d "$currentDirectory/.metadata" ];
+	then projectDirectoryPath="$currentDirectory"
+	break
+	else
+	currentDirectory="$(dirname "$currentDirectory")"
+	fi
+done 
+}
+
+restore(){
+read -p "Please specify number of a version you want to restore: " versionToRestore
+navigateToProjectDirectory
+projectDir="$(pwd)"
+backupDir="$projectDir/.eco.$(basename "$projectDir")"
+
+if [ -d "$backupDir/$versionToRestore" ];
+	then rsync -a "$backupDir/$versionToRestore"
+fi
+}
+
+userSignIn(){
+userName=$(whoami)
+userData="$scriptPath/ECO/.metadata/.userData/.$userName.txt"
+if [ -f "$userData" ] && [ -s "$userData" ];
+	then echo "Such user already exists"
+
+	elif [ ! -f "$userData" ];
+	then  touch "$userData"
+fi
+
+while [ ! -s "$userData" ]
+do
+	read -p "Please enter password: " password
+#encrypt password using hashing algorithm
+	salt=$(openssl rand -base64 12)
+	passwordHash=$(openssl passwd -6 -salt "$salt" "$password")
+	echo "$salt" >> "$userData"
+	echo "$passwordHash" >> "$userData"
+	echo "Registration complete!"
+done
+}
+
+userLogIn(){
+userName=$(whoami)
+userData="$scriptPath/ECO/.metadata/.userData/.$userName.txt"
+
+#check if user datafile exists and is not empty
+if [ -f "$userData" ] && [ -s "$userData" ];
+	then
+	read -p "Please enter your password: " -s password
+	echo
+#extract salt and hashed password from file that contains user data
+	salt=$(head -n 1 "$userData")
+	storedHash=$(tail -n +2 "$userData")
+#hash password provided by user using their salt again and then compare if it is the same as hash
+#stored in user data file
+#if hashes match, login successful
+	currentHash=$(openssl passwd -6 -salt "$salt" "$password")
+
+	if [ "$storedHash" ==  "$currentHash" ];
+	then echo "Login successful"
+#change global variable loggedIn to true(0)
+	loggedIn=0
+	elif [ ! "$storedHash" == "$currentHash" ];
+	then echo "Invalid password"
+	fi
+else echo "User data missing, try signing in first!"
+fi
+}
+
+checkInFile(){
+read -p "What file do you want to check in? Please enter its name: " fileName
+statusFile="$(pwd)/.$fileName.status.txt"
+initialFile="$(pwd)/$fileName"
+userName=$(whoami)
+
+if [ -f "$initialFile" ];
+then 
+
+	if [ ! -f "$statusFile" ];
+	then touch "$statusFile"
+	echo "$userName" >> "$statusFile"
+	nano "$initialFile"
+	elif [ -f "$statusFile" ];
+	then statusFileContent="$(cat "$statusFile")"
+		if [ "$userName" == "$statusFileContent" ];
+		then nano "$initialFile"
+		elif [ ! "$userName" == "$statusFileContent" ];
+		then echo "File is already checked in! Please wait until another user is done working on it."
+		fi
+	fi
+elif [ ! -f "$initialFile" ];
+then echo "File name not found, please try again."
+fi
+
+}
+
+checkOutFile(){
+read -p "What file do you want to check out? Please enter its name: " fileName
+initialFile="$(pwd)/$fileName"
+userName=$(whoami)
+
+if [ -f "$initialFile" ];
+then statusFile="$(pwd)/.$fileName.status.txt" 
+
+	if [ -f "$statusFile" ];
+	then statusFileContent="$(cat "$statusFile")"
+
+		if [ "$userName" == "$statusFileContent" ];
+		then rm "$statusFile"
+		echo "File is successfully checked out! Other user can now work on it."
+		elif [ ! "$userName" == "$statusFileContent" ];
+		then echo "You can only check out file that you have checked in, please wait until another user checkes it out!"
+		fi
+	elif [ ! -f "$statusFile" ];
+	then echo "File is already checked out! You can use it now!"
+	fi
+elif [ ! -f "$initialFile" ];
+then echo "File name not found, please try again"
+fi
+}
+
+#function to be run from project folder only
+#consider that when implement menu
+moveToRepository(){
+#these two lines to be deleted
+#only used for test puroses to redirect user to project directory
+read -p "Enter name of the project you want to work on: " project
+cd "$scriptPath/ECO/$project"
+
+projectName="$(basename "$(pwd)")"
+projectDirectory="$scriptPath/ECO/$projectName"
+projectRepository="$projectDirectory/.eco.$projectName"
+
+read -p "Enter name of the file you want to move to repository: " fileName
+
+if [ -f "$fileName" ];
+then fileDirectory="$projectRepository/$fileName"
+	if [ ! -d "$fileDirectory" ];
+	then mkdir -p "$fileDirectory"
+	fi
+#count how many version files there are in file directory
+#chatGPT provided this line
+	versionCount=$(find "$fileDirectory" -maxdepth 1 -type f -name "version*" | grep -c "version")
+#increment current version number by one
+	versionNumber=$(($versionCount + 1))
+#cat command will create a file with corresponding version number and cat contents of initial file to it
+	cat "$fileName" >  "$fileDirectory/version$versionNumber"
+	echo "Version $versionNumber of $fileName is saved into repository."
+
+elif [ ! -f "$fileName" ];
+then echo "Invalid name of the file, please try again"
+fi
+}
+
+
+#will only run while user is in project directory
+restore(){
+#again, just redirection to the project directory
+#two lines to delete
+read -p "Enter the name of the project: " project
+cd "$scriptPath/ECO/$project"
+
+projectName="$(basename "$(pwd)")"
+projectDirectory="$scriptPath/ECO/$projectName"
+projectRepository="$projectDirectory/.eco.$projectName"
+
+read -p "Enter the name of the file you want to restore: " fileName
+
+fileDirectory="$projectRepository/$fileName"
+
+if [ -d "$fileDirectory" ];
+then availableVersions=$(find "$fileDirectory" -maxdepth 1 -type f -name "version*")
+
+	if [ -n "$availableVersions"  ];
+	then echo "Available versions of $fileName:"
+	for version in $availableVersions;
+	do echo "$(basename $version)"
+	done
+
+	read -p "Enter the version you want to restore: " selectedVersion
+	selectedVersionFile="$fileDirectory/$selectedVersion"
+		if [ -f "$selectedVersionFile" ];
+		then cp "$selectedVersionFile" "$projectDirectory/$fileName"
+		echo "File $fileName has been restored to version $selectedVersion"
+		elif [ ! -f "$selectedVersionFile" ];
+		then echo "There is no such version, please try again"
+		fi
+	elif [ ! -n "$availableVersions" ];
+	then echo "No versions of $fileName exist in repository"
+	fi
+elif [ ! -d  "$fileDirectory" ];
+then echo "There is no data to restore, please check the name of the file"
+fi
+}
+
+restore
